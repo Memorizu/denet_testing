@@ -1,6 +1,6 @@
 import requests
 from web3 import Web3
-
+import httpx
 from config import settings
 from web3_client.erc20_abi import abi
 
@@ -22,11 +22,10 @@ class Client:
     def get_total_supply(self):
         return self.contract.functions.totalSupply().call()
 
-    def get_balance(self):
-        addr = Web3.to_checksum_address(self.contract_address)
-        balance = self.contract.functions.balanceOf(addr).call()
-        decimals = self.contract.functions.decimals().call()
-        return balance / (10 ** decimals)
+    def get_balance(self, address):
+        address = Web3.to_checksum_address(address)
+        balance = self.contract.functions.balanceOf(address).call()
+        return balance
 
     def get_balances(self, addresses):
         balances = []
@@ -34,7 +33,7 @@ class Client:
             balances.append(self.get_balance(address))
         return balances
 
-    def get_top_balances(self, n):
+    async def get_top_balances(self, limit:int = 3, balance_with_transaction=False):
         url = f"https://api.polygonscan.com/api"
         params = {
             'module': 'account',
@@ -46,13 +45,15 @@ class Client:
             'apikey': self.api_key
         }
 
-        response = requests.get(url, params=params)
-        data = response.json()
+        async with httpx.AsyncClient() as async_client:
+            response = await async_client.get(url, params=params)
+            data = response.json()
 
         if data['status'] != '1':
             raise Exception("Error fetching data from Polygonscan")
 
         balances = {}
+        transactions = {}
         for tx in data['result']:
             to = tx['to']
             value = int(tx['value'])
@@ -61,11 +62,22 @@ class Client:
             else:
                 balances[to] = value
 
-        sorted_balances = sorted(balances.items(), key=lambda x: x[1], reverse=True)
-        return sorted_balances[:n]
+            if balance_with_transaction:
+                timestamp = int(tx['timeStamp'])
+                if to in transactions:
+                    if transactions[to] < timestamp:
+                        transactions[to] = timestamp
+                else:
+                    transactions[to] = timestamp
 
-    def get_top_balances_with_transactions(self, n):
-        pass
+        sorted_balances = sorted(balances.items(), key=lambda x: x[1], reverse=True)
+        top_balances = sorted_balances[:limit]
+
+        if balance_with_transaction:
+            return [(address, balance / (10 ** self.contract.functions.decimals().call()), transactions[address])
+                    for address, balance in top_balances]
+
+        return [(address, balance / (10 ** self.contract.functions.decimals().call())) for address, balance in top_balances]
 
     def get_token_info(self):
         return {
